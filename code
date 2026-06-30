@@ -1,0 +1,264 @@
+  
+```java
+// ===========================================================
+// Skeleton Client – Core Framework (Minecraft 1.20.1)
+// ===========================================================
+
+package com.skeleton.client;
+
+import net.fabricmc.api.ModInitializer;
+import net.fabricmc.loader.api.FabricLoader;
+import net.minecraft.client.MinecraftClient;
+import net.minecraft.util.Identifier;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
+
+import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
+
+// ---------------------------
+// Main Mod Entry
+// ---------------------------
+public class SkeletonClient implements ModInitializer {
+    public static final String MOD_ID = "skeletonclient";
+    public static final Logger LOG = LogManager.getLogger("SkeletonClient");
+    public static final MinecraftClient MC = MinecraftClient.getInstance();
+
+    // Global module registry
+    private static final Map<String, Module> MODULES = new ConcurrentHashMap<>();
+
+    @Override
+    public void onInitialize() {
+        LOG.info("SkeletonClient loading… fuck yeah");
+        registerBuiltInModules();
+        UIManager.init();
+        EventBus.subscribe(PlayerTickEvent.class, SkeletonClient::onPlayerTick);
+    }
+
+    // ---------------------------
+    // Module registration
+    // ---------------------------
+    private static void registerBuiltInModules() {
+        // Core modules – you can add more via reflection or config
+        registerModule(new ESPModule());
+        registerModule(new KillAuraModule());
+        registerModule(new ClickGuiModule());
+        // ... add others as needed
+    }
+
+    public static void registerModule(Module module) {
+        MODULES.put(module.getName().toLowerCase(Locale.ROOT), module);
+        LOG.info("Registered module: {}", module.getName());
+    }
+
+    public static Optional<Module> getModule(String name) {
+        return Optional.ofNullable(MODULES.get(name.toLowerCase(Locale.ROOT)));
+    }
+
+    // ---------------------------
+    // Example tick handler
+    // ---------------------------
+    private static void onPlayerTick(PlayerTickEvent event) {
+        for (Module m : MODULES.values()) {
+            if (m.isEnabled()) {
+                m.onTick(event);
+            }
+        }
+    }
+
+    // ---------------------------
+    // Simple command system (via chat)
+    // ---------------------------
+    static {
+        CommandRegistry.register("skeleton", (sender, args) -> {
+            if (args.length == 0) {
+                sender.sendMessage("§6SkeletonClient v1.0 §7| §fModules: " + MODULES.keySet());
+                return;
+            }
+            String sub = args[0].toLowerCase(Locale.ROOT);
+            switch (sub) {
+                case "toggle":
+                    if (args.length < 2) {
+                        sender.sendMessage("§cUsage: /skeleton toggle <module>");
+                        return;
+                    }
+                    getModule(args[1]).ifPresentOrElse(
+                        m -> {
+                            m.toggle();
+                            sender.sendMessage("§a" + m.getName() + " toggled " + (m.isEnabled() ? "on" : "off"));
+                        },
+                        () -> sender.sendMessage("§cModule not found")
+                    );
+                    break;
+                default:
+                    sender.sendMessage("§cUnknown subcommand");
+            }
+        });
+    }
+}
+
+// ===========================================================
+// Module Base Class
+// ===========================================================
+abstract class Module {
+    private final String name;
+    private final String description;
+    private boolean enabled = false;
+
+    public Module(String name, String description) {
+        this.name = name;
+        this.description = description;
+        // Auto‑register to UI list
+        UIManager.registerModule(this);
+    }
+
+    public String getName() { return name; }
+    public String getDescription() { return description; }
+    public boolean isEnabled() { return enabled; }
+
+    public void toggle() {
+        enabled = !enabled;
+        onToggle(enabled);
+    }
+
+    // Called when module is toggled
+    protected abstract void onToggle(boolean on);
+
+    // Called each tick when enabled
+    public abstract void onTick(PlayerTickEvent event);
+}
+
+// ===========================================================
+// Example ESP Module
+// ===========================================================
+class ESPModule extends Module {
+    public ESPModule() {
+        super("ESP", "Draws boxes around players, mobs, and items");
+    }
+
+    @Override
+    protected void onToggle(boolean on) {
+        SkeletonClient.LOG.info("ESP {}!", on ? "enabled" : "disabled");
+    }
+
+    @Override
+    public void onTick(PlayerTickEvent event) {
+        // Simple ray‑trace and render box logic (pseudo)
+        RenderHelper.renderEntityBoxes(event.getWorld());
+    }
+}
+
+// ===========================================================
+// Example KillAura Module
+// ===========================================================
+class KillAuraModule extends Module {
+    public KillAuraModule() {
+        super("KillAura", "Auto attacks nearby entities");
+    }
+
+    @Override
+    protected void onToggle(boolean on) {
+        SkeletonClient.LOG.info("KillAura {}!", on ? "enabled" : "disabled");
+    }
+
+    @Override
+    public void onTick(PlayerTickEvent event) {
+        Entity target = TargetFinder.findClosestHostile(event.getPlayer(), 5.0);
+        if (target != null && !event.getPlayer().isAttacking()) {
+            event.getPlayer().attack(target);
+        }
+    }
+}
+
+// ===========================================================
+// UI Manager (ClickGUI stub)
+// ===========================================================
+class UIManager {
+    private static final List<Module> MODULE_LIST = new ArrayList<>();
+
+    public static void init() {
+        // Register a simple click‑gui screen
+        // This is a placeholder – you can replace with any ImGui/FTB‑like UI
+        FabricLoader.getInstance().getEntrypointContainers("client", ClientModInitializer.class)
+            .forEach(container -> MinecraftClient.getInstance().setScreen(new ClickGuiScreen()));
+    }
+
+    public static void registerModule(Module m) {
+        MODULE_LIST.add(m);
+    }
+
+    // Simple get‑list for rendering
+    public static List<Module> getModules() { return Collections.unmodifiableList(MODULE_LIST); }
+}
+
+// ===========================================================
+// Event Bus (very lightweight)
+// ===========================================================
+class EventBus {
+    private static final Map<Class<?>, List<Consumer<?>>> LISTENERS = new HashMap<>();
+
+    public static <T> void subscribe(Class<T> eventClass, Consumer<T> handler) {
+        LISTENERS.computeIfAbsent(eventClass, k -> new ArrayList<>()).add(handler);
+    }
+
+    @SuppressWarnings("unchecked")
+    public static <T> void post(T event) {
+        List<Consumer<?>> handlers = LISTENERS.get(event.getClass());
+        if (handlers != null) {
+            for (Consumer<?> h : handlers) {
+                ((Consumer<T>) h).accept(event);
+            }
+        }
+    }
+}
+
+// ===========================================================
+// Sample Event Types
+// ===========================================================
+class PlayerTickEvent {
+    private final net.minecraft.entity.player.PlayerEntity player;
+    private final net.minecraft.world.World world;
+
+    public PlayerTickEvent(net.minecraft.entity.player.PlayerEntity p, net.minecraft.world.World w) {
+        this.player = p;
+        this.world = w;
+    }
+
+    public net.minecraft.entity.player.PlayerEntity getPlayer() { return player; }
+    public net.minecraft.world.World getWorld() { return world; }
+}
+
+// ===========================================================
+// Command Registry (simplified)
+// ===========================================================
+class CommandRegistry {
+    private static final Map<String, BiConsumer<CommandSource, String[]>> COMMANDS = new HashMap<>();
+
+    public static void register(String name, BiConsumer<CommandSource, String[]> executor) {
+        COMMANDS.put(name.toLowerCase(Locale.ROOT), executor);
+    }
+
+    // Hook this into Fabric's command dispatcher
+}
+
+// ===========================================================
+// Helper Stubs (Render, TargetFinding)
+// ===========================================================
+class RenderHelper {
+    public static void renderEntityBoxes(net.minecraft.world.World world) {
+        // Iterate entities, draw ESP boxes via GL/GLSL
+    }
+}
+
+class TargetFinder {
+    public static net.minecraft.entity.Entity findClosestHostile(net.minecraft.entity.player.PlayerEntity player, double range) {
+        // Scan world entities, filter hostile, return nearest within range
+        return null;
+    }
+}
+
+// ===========================================================
+// End of Skeleton Client core – expand as you wish.
+// Add your own modules, integrate with Mixins, and fine‑tune the UI.
+// ===========================================================
+```
